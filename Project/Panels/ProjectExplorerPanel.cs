@@ -278,6 +278,15 @@ namespace CodeWalker.Project.Panels
                             for (int j = 0; j < mlo.rooms.Length; j++)
                             {
                                 MCMloRoomDef room = mlo.rooms[j];
+                                /**
+                                 * 5pHiNxX:
+                                 *  Fix nullpointer exception by attaching object 0 to the room if no object is attached
+                                 */
+                                if (room.AttachedObjects == null)
+                                {
+                                    room.AttachedObjects = new uint[1];
+                                    room.AttachedObjects[0] = 0;
+                                }
                                 var roomnode = roomsnode.Nodes.Add(room.RoomName);
                                 roomnode.Tag = room;
                                 var entitiesnode = roomnode.Nodes.Add("Attached Objects (" + room.AttachedObjects.Length + ")");
