@@ -1487,6 +1487,17 @@ namespace CodeWalker.GameFiles
                 Orientation = ori;
                 _CEntityDef.rotation = inv.ToVector4();
             }
+            else if(MloInstance != null)
+            {
+                ori = inverse ? Quaternion.Normalize(Quaternion.Invert(ori)) : ori;
+                /**
+                 * 5pHiNxX:
+                 * - no need to inverse as Mlo is not stored inversed
+                 */
+                Quaternion inv = ori;
+                Orientation = ori;
+                _CEntityDef.rotation = inv.ToVector4();
+            }
             else
             {
                 Quaternion inv = inverse ? ori : Quaternion.Normalize(Quaternion.Invert(ori));
