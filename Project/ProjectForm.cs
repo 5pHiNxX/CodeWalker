@@ -83,6 +83,8 @@ namespace CodeWalker.Project
         private Dictionary<uint, YmapEntityDef> visiblemloentities = new Dictionary<uint, YmapEntityDef>();
         private Dictionary<uint, RelFile> visibleaudiofiles = new Dictionary<uint, RelFile>();
 
+        private Dictionary<uint, Archetype> projectarchetypes = new Dictionary<uint, Archetype>();//used to override archetypes in world view
+
         private bool ShowProjectItemInProcess = false;
 
 
@@ -2242,11 +2244,13 @@ namespace CodeWalker.Project
             }
             CurrentYtypFile = ytyp;
             RefreshUI();
+            AddProjectArchetypes(ytyp);
         }
         public void RemoveYtypFromProject()
         {
             if (CurrentYtypFile == null) return;
             if (CurrentProjectFile == null) return;
+            RemoveProjectArchetypes(CurrentYtypFile);
             CurrentProjectFile.RemoveYtypFile(CurrentYtypFile);
             CurrentYtypFile = null;
             LoadProjectTree();
@@ -2278,6 +2282,8 @@ namespace CodeWalker.Project
             LoadProjectTree();
             ProjectExplorer?.TrySelectArchetypeTreeNode(archetype);
             CurrentArchetype = archetype;
+
+            AddProjectArchetype(archetype);
         }
         public void NewMloEntity(YmapEntityDef copy = null, bool copyTransform = false)
         {
@@ -2485,6 +2491,8 @@ namespace CodeWalker.Project
             var delarch = CurrentArchetype;
             var delytyp = delarch.Ytyp;
 
+            RemoveProjectArchetype(delarch);
+
             ProjectExplorer?.RemoveArchetypeTreeNode(delarch);
             ProjectExplorer?.SetYtypHasChanged(delytyp, true);
 
@@ -2494,6 +2502,44 @@ namespace CodeWalker.Project
 
             return true;
         }
+        private void AddProjectArchetypes(YtypFile ytyp)
+        {
+            if (ytyp?.AllArchetypes == null) return;
+            foreach (var arch in ytyp.AllArchetypes)
+            {
+                AddProjectArchetype(arch);
+            }
+        }
+        private void AddProjectArchetype(Archetype arch)
+        {
+            if ((arch?.Hash ?? 0) == 0) return;
+            lock (projectsyncroot)
+            {
+                projectarchetypes[arch.Hash] = arch;
+            }
+        }
+        private void RemoveProjectArchetypes(YtypFile ytyp)
+        {
+            if (ytyp?.AllArchetypes == null) return;
+            foreach (var arch in ytyp.AllArchetypes)
+            {
+                RemoveProjectArchetype(arch);
+            }
+        }
+        private void RemoveProjectArchetype(Archetype arch)
+        {
+            if ((arch?.Hash ?? 0) == 0) return;
+            Archetype tarch = null;
+            lock (projectsyncroot)
+            {
+                projectarchetypes.TryGetValue(arch.Hash, out tarch);
+                if (tarch == arch)
+                {
+                    projectarchetypes.Remove(arch.Hash);
+                }
+            }
+        }
+
 
         public void NewYnd()
         {
@@ -4263,10 +4309,10 @@ namespace CodeWalker.Project
                 if (vals[0].StartsWith("X")) continue;
                 Vector3 pos = Vector3.Zero;
                 float dir = 0;
-                var action = Unk_3609807418.Move;
-                var navMode = Unk_3971773454.Direct;
-                var navSpeed = Unk_941086046.Unk_00_3279574318;
-                var stype = defaulttype;
+                var action = CScenarioChainingEdge__eAction.Move;
+                var navMode = CScenarioChainingEdge__eNavMode.Direct;
+                var navSpeed = CScenarioChainingEdge__eNavSpeed.Unk_00_3279574318;
+                var stype = new ScenarioTypeRef(defaulttype);
                 var modelset = defaultmodelset;
                 var flags = defaultflags;
                 var ok = true;
@@ -4284,21 +4330,37 @@ namespace CodeWalker.Project
                     byte nsb = 0;
                     byte.TryParse(vals[4].Trim(), out nsb);
                     if (nsb > 15) nsb = 15;
-                    navSpeed = (Unk_941086046)nsb;
+                    navSpeed = (CScenarioChainingEdge__eNavSpeed)nsb;
                 }
                 if (vals.Length > 5)
                 {
                     switch (vals[5].Trim())
                     {
-                        case "Direct": navMode = Unk_3971773454.Direct; break;
-                        case "NavMesh": navMode = Unk_3971773454.NavMesh; break;
-                        case "Roads": navMode = Unk_3971773454.Roads; break;
+                        case "Direct": navMode = CScenarioChainingEdge__eNavMode.Direct; break;
+                        case "NavMesh": navMode = CScenarioChainingEdge__eNavMode.NavMesh; break;
+                        case "Roads": navMode = CScenarioChainingEdge__eNavMode.Roads; break;
                     }
                 }
                 if (vals.Length > 6)
                 {
                     var sthash = JenkHash.GenHash(vals[6].Trim().ToLowerInvariant());
-                    stype = stypes?.GetScenarioType(sthash) ?? defaulttype;
+                    var st = stypes?.GetScenarioType(sthash);
+                    if (st != null)
+                    {
+                        stype = new ScenarioTypeRef(st);
+                    }
+                    else
+                    {
+                        var stg = stypes?.GetScenarioTypeGroup(sthash);
+                        if (stg != null)
+                        {
+                            stype = new ScenarioTypeRef(stg);
+                        }
+                        else
+                        {
+                            stype = new ScenarioTypeRef(defaulttype);
+                        }
+                    }
                 }
                 if (vals.Length > 7)
                 {
@@ -4326,7 +4388,7 @@ namespace CodeWalker.Project
                 thisnode.ChainingNode.ScenarioNode = thisnode;
                 thisnode.ChainingNode.Chain = chain;
                 thisnode.ChainingNode.Type = stype;
-                thisnode.ChainingNode.TypeHash = stype?.NameHash ?? 0;
+                thisnode.ChainingNode.TypeHash = stype.NameHash;
                 thisnode.ChainingNode.NotLast = (i < (lines.Length - 1));
                 thisnode.ChainingNode.NotFirst = (lastnode != null);
 
@@ -5022,7 +5084,7 @@ namespace CodeWalker.Project
             room.NameHash = JenkHash.GenHash(room.Name);
 
             room.Flags0 = 0xAAAAAAAA;
-            room.Unk06 = 3817852694;//??
+            room.Unk06 = (uint)MetaName.null_sound;
             room.Unk14 = 3565506855;//?
 
 
@@ -5118,11 +5180,32 @@ namespace CodeWalker.Project
                     foreach (var kvp in ymaps)
                     {
                         var ymap = kvp.Value;
-                        if (ymap.MloEntities == null) continue;
-                        foreach (var mloDef in ymap.MloEntities)
+                        if (ymap.AllEntities != null)
                         {
-                            if (mloDef.Archetype == null) continue; // archetype was changed from an mlo to a regular archetype
-                            visiblemloentities[mloDef.Archetype._BaseArchetypeDef.name] = mloDef;
+                            foreach (var ent in ymap.AllEntities)
+                            {
+                                if (ent.Archetype == null) continue;
+
+                                Archetype parch = null;
+                                projectarchetypes.TryGetValue(ent.Archetype.Hash, out parch);
+                                if ((parch != null) && (ent.Archetype != parch))
+                                {
+                                    ent.SetArchetype(parch); //swap archetype to project one...
+                                    if (ent.IsMlo)
+                                    {
+                                        ent.MloInstance.InitYmapEntityArchetypes(GameFileCache);
+                                    }
+                                }
+
+                            }
+                        }
+                        if (ymap.MloEntities != null)
+                        {
+                            foreach (var mloDef in ymap.MloEntities)
+                            {
+                                if (mloDef.Archetype == null) continue; // archetype was changed from an mlo to a regular archetype
+                                visiblemloentities[mloDef.Archetype._BaseArchetypeDef.name] = mloDef;
+                            }
                         }
                     }
                 }
@@ -6114,6 +6197,8 @@ namespace CodeWalker.Project
             byte[] data = File.ReadAllBytes(filename);
 
             ytyp.Load(data);
+
+            AddProjectArchetypes(ytyp);
         }
         private void LoadYndFromFile(YndFile ynd, string filename)
         {

@@ -101,10 +101,19 @@ namespace CodeWalker.Forms
 
 
         ModelMatForm materialForm = null;
-        private bool modelModified = false;
+        bool modelModified = false;
 
         ExploreForm exploreForm = null;
         RpfFileEntry rpfFileEntry = null;
+
+
+        bool animsInited = false;
+        YcdFile Ycd = null;
+        ClipMapEntry AnimClip = null;
+
+        MetaHash ModelHash;
+        Archetype ModelArchetype = null;
+        bool EnableRootMotion = false;
 
 
 
@@ -156,7 +165,7 @@ namespace CodeWalker.Forms
                 return;
             }
 
-            MetaName[] texsamplers = RenderableGeometry.GetTextureSamplerList();
+            ShaderParamNames[] texsamplers = RenderableGeometry.GetTextureSamplerList();
             foreach (var texsampler in texsamplers)
             {
                 TextureSamplerComboBox.Items.Add(texsampler);
@@ -204,6 +213,9 @@ namespace CodeWalker.Forms
             camera.CurrentRotation.Y = 0.2f;
             camera.TargetRotation.X = 0.5f * (float)Math.PI;
             camera.CurrentRotation.X = 0.5f * (float)Math.PI;
+
+            Renderer.shaders.deferred = false; //no point using this here yet
+
 
             LoadSettings();
 
@@ -314,6 +326,11 @@ namespace CodeWalker.Forms
                         timecycle.SetTime(Renderer.timeofday);
                         //UpdateStatus("Timecycles loaded.");
                     }
+                    if (!animsInited)
+                    {
+                        InitAnimation();
+                        animsInited = true;
+                    }
                     if (Renderer.renderskydome)
                     {
                         if (!weather.Inited)
@@ -355,6 +372,35 @@ namespace CodeWalker.Forms
 
 
 
+        private void InitAnimation()
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => { InitAnimation(); }));
+            }
+            else
+            {
+                ClipComboBox.Items.Clear();
+                ClipDictComboBox.Items.Clear();
+                var ycds = gameFileCache.YcdDict.Values.ToList();
+                ycds.Sort((a, b) => { return a.Name.CompareTo(b.Name); });
+                ClipDictComboBox.AutoCompleteCustomSource.Clear();
+                List<string> ycdlist = new List<string>();
+                foreach (var ycde in ycds)
+                {
+                    ycdlist.Add(ycde.GetShortName());
+                }
+                ClipDictComboBox.AutoCompleteCustomSource.AddRange(ycdlist.ToArray());
+                ClipDictComboBox.Text = "";
+
+                TrySelectClipDict();
+
+            }
+        }
+
+
+
+
 
         private void LoadSettings()
         {
@@ -381,12 +427,13 @@ namespace CodeWalker.Forms
         {
             //move the camera to a default place where the given sphere is fully visible.
 
-            rad = Math.Max(0.5f, rad);
+            rad = Math.Max(0.01f, rad);
 
             camera.FollowEntity.Position = pos;
             camera.TargetDistance = rad * 1.6f;
             camera.CurrentDistance = rad * 1.6f;
 
+            camera.UpdateProj = true;
         }
 
 
@@ -475,18 +522,19 @@ namespace CodeWalker.Forms
 
         private void RenderSingleItem()
         {
+            if (AnimClip != null)
+            {
+                AnimClip.EnableRootMotion = EnableRootMotion;
+            }
 
-            uint hash = 0;
-            Archetype arch = null;
 
             if (Ydr != null)
             {
                 if (Ydr.Loaded)
                 {
-                    hash = Ydr?.RpfFileEntry?.ShortNameHash ?? 0;
-                    arch = TryGetArchetype(hash);
+                    if (ModelArchetype == null) ModelArchetype = TryGetArchetype(ModelHash);
 
-                    Renderer.RenderDrawable(Ydr.Drawable, arch, null, hash);
+                    Renderer.RenderDrawable(Ydr.Drawable, ModelArchetype, null, ModelHash, null, null, AnimClip);
                 }
             }
             else if (Ydd != null)
@@ -498,9 +546,9 @@ namespace CodeWalker.Forms
                     {
                         if (!DrawableDrawFlags.ContainsKey(kvp.Value))//only render if it's checked...
                         {
-                            arch = TryGetArchetype(kvp.Key);
+                            var arch = TryGetArchetype(kvp.Key);
 
-                            Renderer.RenderDrawable(kvp.Value, arch, null, Ydd.RpfFileEntry.ShortNameHash);
+                            Renderer.RenderDrawable(kvp.Value, arch, null, Ydd.RpfFileEntry.ShortNameHash, null, null, AnimClip);
                         }
                     }
                 }
@@ -513,9 +561,9 @@ namespace CodeWalker.Forms
                     {
                         if (!DrawableDrawFlags.ContainsKey(kvp.Value))//only render if it's checked...
                         {
-                            arch = TryGetArchetype(kvp.Key);
+                            if (ModelArchetype == null) ModelArchetype = TryGetArchetype(kvp.Key);
 
-                            Renderer.RenderDrawable(kvp.Value, arch, null, kvp.Key);
+                            Renderer.RenderDrawable(kvp.Value, ModelArchetype, null, kvp.Key, null, null, AnimClip);
                         }
                     }
                 }
@@ -528,17 +576,9 @@ namespace CodeWalker.Forms
                     {
                         var f = Yft.Fragment;
 
-                        hash = Yft.RpfFileEntry?.ShortNameHash ?? 0;
+                        if (ModelArchetype == null) ModelArchetype = TryGetArchetype(ModelHash);
 
-                        var namelower = Yft.RpfFileEntry?.GetShortNameLower();
-                        if (namelower?.EndsWith("_hi") ?? false)
-                        {
-                            hash = JenkHash.GenHash(namelower.Substring(0, namelower.Length - 3));
-                        }
-
-                        arch = TryGetArchetype(hash);
-
-                        Renderer.RenderFragment(arch, null, f, hash);
+                        Renderer.RenderFragment(ModelArchetype, null, f, ModelHash, AnimClip);
                     }
                 }
             }
@@ -574,6 +614,11 @@ namespace CodeWalker.Forms
             FileName = ydr.Name;
             Ydr = ydr;
             rpfFileEntry = Ydr.RpfFileEntry;
+            ModelHash = Ydr.RpfFileEntry?.ShortNameHash ?? 0;
+            if (ModelHash != 0)
+            {
+                ModelArchetype = TryGetArchetype(ModelHash);
+            }
 
             if (ydr.Drawable != null)
             {
@@ -590,6 +635,16 @@ namespace CodeWalker.Forms
             Ydd = ydd;
             rpfFileEntry = Ydd.RpfFileEntry;
 
+            if (Ydd.Drawables != null)
+            {
+                float maxrad = 0.01f;
+                foreach (var d in Ydd.Drawables)
+                {
+                    maxrad = Math.Max(maxrad, d.BoundingSphereRadius);
+                }
+                MoveCameraToView(Vector3.Zero, maxrad);
+            }
+
             UpdateModelsUI(ydd.Dict);
 
             DetailsPropertyGrid.SelectedObject = ydd;
@@ -601,6 +656,17 @@ namespace CodeWalker.Forms
             FileName = yft.Name;
             Yft = yft;
             rpfFileEntry = Yft.RpfFileEntry;
+            ModelHash = Yft.RpfFileEntry?.ShortNameHash ?? 0;
+            var namelower = Yft.RpfFileEntry?.GetShortNameLower();
+            if (namelower?.EndsWith("_hi") ?? false)
+            {
+                ModelHash = JenkHash.GenHash(namelower.Substring(0, namelower.Length - 3));
+            }
+            if (ModelHash != 0)
+            {
+                ModelArchetype = TryGetArchetype(ModelHash);
+            }
+
 
             var dr = yft.Fragment?.Drawable;
             if (dr != null)
@@ -633,6 +699,16 @@ namespace CodeWalker.Forms
             Ypt = ypt;
             rpfFileEntry = Ypt.RpfFileEntry;
 
+            if (ypt.DrawableDict != null)
+            {
+                float maxrad = 0.01f;
+                foreach (var d in ypt.DrawableDict.Values)
+                {
+                    maxrad = Math.Max(maxrad, d.BoundingSphereRadius);
+                }
+                MoveCameraToView(Vector3.Zero, maxrad);
+            }
+
             UpdateModelsUI(ypt.DrawableDict);
 
             DetailsPropertyGrid.SelectedObject = ypt;//.PtfxList;
@@ -657,7 +733,14 @@ namespace CodeWalker.Forms
         }
 
 
-
+        private void TrySelectClipDict()
+        {
+            if (ModelArchetype != null)
+            {
+                var str = ModelArchetype.ClipDict.ToCleanString();
+                ClipDictComboBox.Text = str;
+            }
+        }
 
 
 
@@ -701,6 +784,63 @@ namespace CodeWalker.Forms
             }
             catch { }
         }
+
+
+
+
+
+
+
+        private void LoadClipDict(string name)
+        {
+            if (gameFileCache == null) return;
+            if (!gameFileCache.IsInited) return;//what to do here? wait for it..?
+
+            var ycdhash = JenkHash.GenHash(name.ToLowerInvariant());
+            var ycd = gameFileCache.GetYcd(ycdhash);
+            while ((ycd != null) && (!ycd.Loaded))
+            {
+                Thread.Sleep(1);//kinda hacky
+                ycd = gameFileCache.GetYcd(ycdhash);
+            }
+
+            Ycd = ycd;
+
+            ClipComboBox.Items.Clear();
+            ClipComboBox.Items.Add("");
+
+            if (ycd?.ClipMapEntries == null)
+            {
+                ClipComboBox.SelectedIndex = 0;
+                AnimClip = null;
+                return;
+            }
+
+            List<string> items = new List<string>();
+            foreach (var cme in ycd.ClipMapEntries)
+            {
+                if (cme.Clip != null)
+                {
+                    items.Add(cme.Clip.ShortName);
+                }
+            }
+
+            items.Sort();
+            foreach (var item in items)
+            {
+                ClipComboBox.Items.Add(item);
+            }
+        }
+
+        private void SelectClip(string name)
+        {
+            MetaHash cliphash = JenkHash.GenHash(name);
+            ClipMapEntry cme = null;
+            Ycd?.ClipMap?.TryGetValue(cliphash, out cme);
+            AnimClip = cme;
+        }
+
+
 
 
 
@@ -923,7 +1063,13 @@ namespace CodeWalker.Forms
             bool check = true;
             if (dict != null)
             {
+                List<KeyValuePair<uint, Drawable>> items = new List<KeyValuePair<uint, Drawable>>();
                 foreach (var kvp in dict)
+                {
+                    items.Add(kvp);
+                }
+                items.Sort((a, b) => { return a.Value?.Name?.CompareTo(b.Value?.Name ?? "") ?? 0; });
+                foreach (var kvp in items)
                 {
                     AddDrawableTreeNode(kvp.Value, kvp.Key, check);
                     check = false;
@@ -1676,9 +1822,9 @@ namespace CodeWalker.Forms
 
         private void TextureSamplerComboBox_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (TextureSamplerComboBox.SelectedItem is MetaName)
+            if (TextureSamplerComboBox.SelectedItem is ShaderParamNames)
             {
-                Renderer.shaders.RenderTextureSampler = (MetaName)TextureSamplerComboBox.SelectedItem;
+                Renderer.shaders.RenderTextureSampler = (ShaderParamNames)TextureSamplerComboBox.SelectedItem;
             }
         }
 
@@ -1835,6 +1981,21 @@ namespace CodeWalker.Forms
         private void SaveAsMenuButton_Click(object sender, EventArgs e)
         {
             Save(true);
+        }
+
+        private void ClipDictComboBox_TextChanged(object sender, EventArgs e)
+        {
+            LoadClipDict(ClipDictComboBox.Text);
+        }
+
+        private void ClipComboBox_TextChanged(object sender, EventArgs e)
+        {
+            SelectClip(ClipComboBox.Text);
+        }
+
+        private void EnableRootMotionCheckBox_CheckedChanged(object sender, EventArgs e)
+        {
+            EnableRootMotion = EnableRootMotionCheckBox.Checked;
         }
     }
 }

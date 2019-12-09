@@ -154,7 +154,7 @@ namespace CodeWalker
         MapSelection PrevMouseHit = new MapSelection();
 
         bool MouseRayCollisionEnabled = true;
-        bool MouseRayCollisionVisible = true;
+        bool MouseRayCollisionVisible = false;
         SpaceRayIntersectResult MouseRayCollision = new SpaceRayIntersectResult();
 
         string SelectionModeStr = "Entity";
@@ -197,6 +197,7 @@ namespace CodeWalker
 
         WorldSearchForm SearchForm = null;
 
+        CutsceneForm CutsceneForm = null;
 
         InputManager Input = new InputManager();
 
@@ -281,7 +282,7 @@ namespace CodeWalker
             LocatorMarker.IsMovable = true;
             //AddDefaultMarkers(); //some POI to start with
 
-            MetaName[] texsamplers = RenderableGeometry.GetTextureSamplerList();
+            ShaderParamNames[] texsamplers = RenderableGeometry.GetTextureSamplerList();
             foreach (var texsampler in texsamplers)
             {
                 TextureSamplerComboBox.Items.Add(texsampler);
@@ -404,7 +405,10 @@ namespace CodeWalker
 
             space.Update(elapsed);
 
-
+            if (CutsceneForm != null)
+            {
+                CutsceneForm.UpdateAnimation(elapsed);
+            }
 
             Renderer.Update(elapsed, MouseLastPoint.X, MouseLastPoint.Y);
 
@@ -624,6 +628,7 @@ namespace CodeWalker
                 Vector3 move = lftxy * movecontrol.X + fwdxy * movecontrol.Y;
                 Vector2 movexy = new Vector2(move.X, move.Y);
 
+                movexy *= (1.0f + (Math.Min(Math.Max(Input.xblt, 0.0f), 1.0f) * 15.0f)); //boost with left trigger
 
                 pedEntity.ControlMovement = movexy;
                 pedEntity.ControlJump = Input.kbjump || Input.ControllerButtonPressed(GamepadButtonFlags.X);
@@ -678,6 +683,10 @@ namespace CodeWalker
                 ProjectForm.GetVisibleYmaps(camera, renderworldVisibleYmapDict);
             }
 
+            if (CutsceneForm != null)
+            {
+                CutsceneForm.GetVisibleYmaps(camera, renderworldVisibleYmapDict);
+            }
 
             Renderer.RenderWorld(renderworldVisibleYmapDict, spaceEnts);
 
@@ -1239,6 +1248,10 @@ namespace CodeWalker
                     mode = BoundsShaderMode.Sphere;
                 }
             }
+            if (CurMouseHit.CollisionBounds != null)
+            {
+                ori = ori * CurMouseHit.BBOrientation;
+            }
 
 
             Renderer.RenderMouseHit(mode, clip, ref camrel, ref bbmin, ref bbmax, ref scale, ref ori, bsphrad);
@@ -1268,13 +1281,15 @@ namespace CodeWalker
             const uint caqu = 4294967040;// (uint)new Color4(0.0f, 1.0f, 1.0f, 1.0f).ToRgba();
             //const uint cyel = 4278255615;//
 
-            if (MouseRayCollisionEnabled && MouseRayCollisionVisible)
+            if (ControlBrushEnabled && MouseRayCollision.Hit)
             {
-                if (MouseRayCollision.Hit)
-                {
-                    var arup = GetPerpVec(MouseRayCollision.Normal);
-                    Renderer.RenderBrushRadiusOutline(MouseRayCollision.Position, MouseRayCollision.Normal, arup, ProjectForm.GetInstanceBrushRadius(), cgrn);
-                }
+                var arup = GetPerpVec(MouseRayCollision.Normal);
+                Renderer.RenderBrushRadiusOutline(MouseRayCollision.Position, MouseRayCollision.Normal, arup, ProjectForm.GetInstanceBrushRadius(), cgrn);
+            }
+            if (MouseRayCollisionVisible && MouseRayCollision.Hit)
+            {
+                var arup = GetPerpVec(MouseRayCollision.Normal);
+                Renderer.RenderSelectionArrowOutline(MouseRayCollision.Position, MouseRayCollision.Normal, arup, Quaternion.Identity, 1.0f, 0.05f, cgrn);
             }
 
             if (!ShowSelectionBounds)
@@ -1524,6 +1539,11 @@ namespace CodeWalker
                     wbox.Scale = scale;
                     Renderer.WhiteBoxes.Add(wbox);
                 }
+            }
+            if (selectionItem.CollisionBounds != null)
+            {
+                camrel += ori.Multiply(selectionItem.BBOffset);
+                ori = ori * selectionItem.BBOrientation;
             }
 
             if (mode == BoundsShaderMode.Box)
@@ -1876,6 +1896,29 @@ namespace CodeWalker
         }
 
 
+        public void SetCameraTransform(Vector3 pos, Quaternion rot)
+        {
+            camera.FollowEntity.Position = pos;
+            camera.FollowEntity.Orientation = rot;
+            camera.FollowEntity.OrientationInv = Quaternion.Invert(rot);
+            camera.TargetRotation = Vector3.Zero;
+            camera.TargetDistance = 0.01f;
+        }
+        public void SetCameraClipPlanes(float znear, float zfar)
+        {
+            //sets the camera clip planes to the specified values, for use in eg cutscenes
+            camera.ZNear = znear;
+            camera.ZFar = zfar;
+            camera.UpdateProj = true;
+        }
+        public void ResetCameraClipPlanes()
+        {
+            //resets the camera clip planes to the values in the UI controls.
+            camera.ZNear = (float)NearClipUpDown.Value;
+            camera.ZFar = (float)FarClipUpDown.Value;
+            camera.UpdateProj = true;
+        }
+
         public Vector3 GetCameraPosition()
         {
             //currently used by ProjectForm when creating entities
@@ -2159,13 +2202,21 @@ namespace CodeWalker
             if (Input.CtrlPressed && ProjectForm != null && ProjectForm.CanPaintInstances())
             {
                 ControlBrushEnabled = true;
-                MouseRayCollisionEnabled = true;
+                MouseRayCollisionVisible = false;
                 MouseRayCollision = GetSpaceMouseRay();
             }
-            else if (MouseRayCollisionEnabled)
+            else
             {
                 ControlBrushEnabled = false;
-                MouseRayCollisionEnabled = false;
+                if (Input.CtrlPressed && MouseRayCollisionEnabled)
+                {
+                    MouseRayCollisionVisible = true;
+                    MouseRayCollision = GetSpaceMouseRay();
+                }
+                else
+                {
+                    MouseRayCollisionVisible = false;
+                }
             }
 
 
@@ -2182,7 +2233,7 @@ namespace CodeWalker
         public SpaceRayIntersectResult GetSpaceMouseRay()
         {
             SpaceRayIntersectResult ret = new SpaceRayIntersectResult();
-            if (space.Inited && space.Grid != null)
+            if (space.Inited && space.BoundsStore != null)
             {
                 Ray mray = new Ray();
                 mray.Position = camera.MouseRay.Position + camera.Position;
@@ -2530,10 +2581,8 @@ namespace CodeWalker
             mray.Position = camera.MouseRay.Position + camera.Position;
             mray.Direction = camera.MouseRay.Direction;
             float hitdist = float.MaxValue;
-            Quaternion orinv = Quaternion.Invert(orientation);
+
             Ray mraytrn = new Ray();
-            mraytrn.Position = orinv.Multiply(camera.MouseRay.Position - camrel);
-            mraytrn.Direction = orinv.Multiply(mray.Direction);
 
             MapBox mb = new MapBox();
             mb.CamRelPos = camrel;// rbginst.Inst.CamRel;
@@ -2544,23 +2593,31 @@ namespace CodeWalker
             {
                 if (geom == null) continue;
 
-                mb.BBMin = geom.BoundGeom.BoundingBoxMin;
-                mb.BBMax = geom.BoundGeom.BoundingBoxMax;
+                mb.BBMin = geom.BBMin;
+                mb.BBMax = geom.BBMax;
+                mb.CamRelPos = camrel + orientation.Multiply(geom.BBOffset);
+                mb.Orientation = orientation * geom.BBOrientation;
 
-                var cent = camrel + (mb.BBMin + mb.BBMax) * 0.5f;
+                var cent = mb.CamRelPos + (mb.BBMin + mb.BBMax) * 0.5f;
                 if (cent.Length() > Renderer.renderboundsmaxdist) continue;
 
                 Renderer.BoundingBoxes.Add(mb);
+
+                Quaternion orinv = Quaternion.Invert(mb.Orientation);
+                mraytrn.Position = orinv.Multiply(camera.MouseRay.Position - mb.CamRelPos);
+                mraytrn.Direction = orinv.Multiply(mray.Direction);
 
                 bbox.Minimum = mb.BBMin * scale;
                 bbox.Maximum = mb.BBMax * scale;
                 if (mraytrn.Intersects(ref bbox, out hitdist) && (hitdist < CurMouseHit.HitDist) && (hitdist > 0))
                 {
-                    CurMouseHit.CollisionBounds = geom.BoundGeom;
+                    CurMouseHit.CollisionBounds = geom.Bound;
                     CurMouseHit.EntityDef = entity;
                     CurMouseHit.Archetype = entity?.Archetype;
                     CurMouseHit.HitDist = hitdist;
-                    CurMouseHit.CamRel = camrel;
+                    CurMouseHit.CamRel = mb.CamRelPos;
+                    CurMouseHit.BBOffset = geom.BBOffset;
+                    CurMouseHit.BBOrientation = geom.BBOrientation;
                     CurMouseHit.AABB = bbox;
                 }
             }
@@ -4098,6 +4155,29 @@ namespace CodeWalker
             //ToolbarSearchWindowButton.Checked = false;
         }
 
+        private void ShowCutsceneForm()
+        {
+            if (CutsceneForm == null)
+            {
+                CutsceneForm = new CutsceneForm(this);
+                CutsceneForm.Show(this);
+            }
+            else
+            {
+                if (CutsceneForm.WindowState == FormWindowState.Minimized)
+                {
+                    CutsceneForm.WindowState = FormWindowState.Normal;
+                }
+                CutsceneForm.Focus();
+            }
+            //ToolbarCutsceneWindowButton.Checked = true;
+        }
+        public void OnCutsceneFormClosed()
+        {
+            CutsceneForm = null;
+            //ToolbarCutsceneWindowButton.Checked = false;
+        }
+
         public void ShowModel(string name)
         {
             ViewModeComboBox.Text = "Model view";
@@ -4605,6 +4685,7 @@ namespace CodeWalker
             WindowState = s.WindowMaximized ? FormWindowState.Maximized : WindowState;
             FullScreenCheckBox.Checked = s.FullScreen;
             WireframeCheckBox.Checked = s.Wireframe;
+            DeferredShadingCheckBox.Checked = s.Deferred;
             HDRRenderingCheckBox.Checked = s.HDR;
             ShadowsCheckBox.Checked = s.Shadows;
             SkydomeCheckBox.Checked = s.Skydome;
@@ -4639,6 +4720,7 @@ namespace CodeWalker
             s.WindowMaximized = (WindowState == FormWindowState.Maximized);
             s.FullScreen = FullScreenCheckBox.Checked;
             s.Wireframe = WireframeCheckBox.Checked;
+            s.Deferred = DeferredShadingCheckBox.Checked;
             s.HDR = HDRRenderingCheckBox.Checked;
             s.Shadows = ShadowsCheckBox.Checked;
             s.Skydome = SkydomeCheckBox.Checked;
@@ -4904,6 +4986,7 @@ namespace CodeWalker
                     ToolbarOpenButton.Enabled = true;
                     ToolbarProjectWindowButton.Enabled = true;
                     ToolsMenuProjectWindow.Enabled = true;
+                    ToolsMenuCutsceneViewer.Enabled = true;
                     ToolsMenuBinarySearch.Enabled = true;
                     ToolsMenuJenkInd.Enabled = true;
                 }
@@ -6070,6 +6153,35 @@ namespace CodeWalker
         }
 
 
+
+
+        public void ShowSubtitle(string text, float duration)
+        {
+            if (InvokeRequired)
+            {
+                try
+                {
+                    BeginInvoke(new Action(() => { ShowSubtitle(text, duration); }));
+                }
+                catch { }
+                return;
+            }
+
+            SubtitleLabel.Text = text;
+            SubtitleLabel.Visible = true;
+            SubtitleTimer.Interval = (int)(duration * 1000.0f);
+            SubtitleTimer.Enabled = true;
+
+        }
+
+
+
+
+
+
+
+
+
         private void StatsUpdateTimer_Tick(object sender, EventArgs e)
         {
 
@@ -6649,6 +6761,18 @@ namespace CodeWalker
             Renderer.renderhdtextures = HDTexturesCheckBox.Checked;
         }
 
+        private void NearClipUpDown_ValueChanged(object sender, EventArgs e)
+        {
+            camera.ZNear = (float)NearClipUpDown.Value;
+            camera.UpdateProj = true;
+        }
+
+        private void FarClipUpDown_ValueChanged(object sender, EventArgs e)
+        {
+            camera.ZFar = (float)FarClipUpDown.Value;
+            camera.UpdateProj = true;
+        }
+
         private void PathsCheckBox_CheckedChanged(object sender, EventArgs e)
         {
             renderpaths = PathsCheckBox.Checked;
@@ -6972,6 +7096,11 @@ namespace CodeWalker
             ShowProjectForm();
         }
 
+        private void ToolsMenuCutsceneViewer_Click(object sender, EventArgs e)
+        {
+            ShowCutsceneForm();
+        }
+
         private void ToolsMenuWorldSearch_Click(object sender, EventArgs e)
         {
             ShowSearchForm();
@@ -7079,9 +7208,9 @@ namespace CodeWalker
 
         private void TextureSamplerComboBox_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (TextureSamplerComboBox.SelectedItem is MetaName)
+            if (TextureSamplerComboBox.SelectedItem is ShaderParamNames)
             {
-                Renderer.shaders.RenderTextureSampler = (MetaName)TextureSamplerComboBox.SelectedItem;
+                Renderer.shaders.RenderTextureSampler = (ShaderParamNames)TextureSamplerComboBox.SelectedItem;
             }
         }
 
@@ -7155,6 +7284,14 @@ namespace CodeWalker
         private void ShowYmapChildrenCheckBox_CheckedChanged(object sender, EventArgs e)
         {
             Renderer.renderchildents = ShowYmapChildrenCheckBox.Checked;
+        }
+
+        private void DeferredShadingCheckBox_CheckedChanged(object sender, EventArgs e)
+        {
+            lock (Renderer.RenderSyncRoot)
+            {
+                Renderer.shaders.deferred = DeferredShadingCheckBox.Checked;
+            }
         }
 
         private void HDRRenderingCheckBox_CheckedChanged(object sender, EventArgs e)
@@ -7831,6 +7968,17 @@ namespace CodeWalker
         {
             var statsForm = new StatisticsForm(this);
             statsForm.Show(this);
+        }
+
+        private void SubtitleLabel_SizeChanged(object sender, EventArgs e)
+        {
+            SubtitleLabel.Left = (ClientSize.Width - SubtitleLabel.Size.Width) / 2; //keep subtitle label centered
+        }
+
+        private void SubtitleTimer_Tick(object sender, EventArgs e)
+        {
+            SubtitleTimer.Enabled = false;
+            SubtitleLabel.Visible = false;
         }
     }
 

@@ -38,8 +38,11 @@ namespace CodeWalker.GameFiles
         public YmapEntityDef[] RootEntities;
         public YmapEntityDef[] MloEntities;
 
+        public YmapFile Parent { get; set; }
         public YmapFile[] ChildYmaps = null;
         public bool MergedWithParent = false;
+
+        public bool IsScripted { get { return (_CMapData.flags & 1) > 0; } }
 
         public YmapGrassInstanceBatch[] GrassInstanceBatches { get; set; }
         public YmapPropInstanceBatch[] PropInstanceBatches { get; set; }
@@ -89,12 +92,13 @@ namespace CodeWalker.GameFiles
             if (resentry == null)
             {
                 NonMetaLoad(data);
+                Loaded = true;
                 return;
             }
 
             ResourceDataReader rd = new ResourceDataReader(resentry, data);
 
-            Meta = rd.ReadBlock<Meta>();
+            Meta = rd.ReadBlock<Meta>();//maybe null this after load to reduce memory consumption?
 
 
 
@@ -139,11 +143,11 @@ namespace CodeWalker.GameFiles
             //{
             //    switch (block.StructureNameHash)
             //    {
-            //        case MetaName.STRING:
-            //        case MetaName.POINTER:
-            //        case MetaName.HASH:
-            //        case MetaName.UINT:
-            //        case MetaName.VECTOR3: //distant lod lights uses this
+            //        case (MetaName)MetaTypeName.STRING:
+            //        case (MetaName)MetaTypeName.POINTER:
+            //        case (MetaName)MetaTypeName.HASH:
+            //        case (MetaName)MetaTypeName.UINT:
+            //        case (MetaName)MetaTypeName.VECTOR3: //distant lod lights uses this
             //        case MetaName.CMapData:
             //        case MetaName.CEntityDef:
             //        case MetaName.CTimeCycleModifier: //these sections are handled already
@@ -232,12 +236,12 @@ namespace CodeWalker.GameFiles
             MemoryStream ms = new MemoryStream(data);
             if (RbfFile.IsRBF(ms))
             {
-                var Rbf = new RbfFile();
+                Rbf = new RbfFile();
                 Rbf.Load(ms);
             }
             else if (PsoFile.IsPSO(ms))
             {
-                var Pso = new PsoFile();
+                Pso = new PsoFile();
                 Pso.Load(ms);
                 //PsoTypes.EnsurePsoTypes(Pso);
             }
@@ -389,7 +393,7 @@ namespace CodeWalker.GameFiles
                 LODLights = new YmapLODLights();
                 LODLights.Ymap = this;
                 LODLights.CLODLight = soa;
-                LODLights.direction = MetaTypes.ConvertDataArray<MetaVECTOR3>(Meta, MetaName.VECTOR3, soa.direction);
+                LODLights.direction = MetaTypes.ConvertDataArray<MetaVECTOR3>(Meta, MetaName.FloatXYZ, soa.direction);
                 LODLights.falloff = MetaTypes.GetFloatArray(Meta, soa.falloff);
                 LODLights.falloffExponent = MetaTypes.GetFloatArray(Meta, soa.falloffExponent);
                 LODLights.timeAndStateFlags = MetaTypes.GetUintArray(Meta, soa.timeAndStateFlags);
@@ -409,7 +413,7 @@ namespace CodeWalker.GameFiles
                 DistantLODLights.Ymap = this;
                 DistantLODLights.CDistantLODLight = soa;
                 DistantLODLights.colours = MetaTypes.GetUintArray(Meta, soa.RGBI);
-                DistantLODLights.positions = MetaTypes.ConvertDataArray<MetaVECTOR3>(Meta, MetaName.VECTOR3, soa.position);
+                DistantLODLights.positions = MetaTypes.ConvertDataArray<MetaVECTOR3>(Meta, MetaName.FloatXYZ, soa.position);
                 DistantLODLights.CalcBB();
             }
         }
@@ -678,7 +682,7 @@ namespace CodeWalker.GameFiles
             if ((LODLights != null) && (LODLights.direction != null))
             {
                 var soa = new CLODLight();
-                soa.direction = mb.AddItemArrayPtr(MetaName.VECTOR3, LODLights.direction);
+                soa.direction = mb.AddItemArrayPtr(MetaName.FloatXYZ, LODLights.direction);
                 soa.falloff = mb.AddFloatArrayPtr(LODLights.falloff);
                 soa.falloffExponent = mb.AddFloatArrayPtr(LODLights.falloffExponent);
                 soa.timeAndStateFlags = mb.AddUintArrayPtr(LODLights.timeAndStateFlags);
@@ -695,7 +699,7 @@ namespace CodeWalker.GameFiles
             if ((DistantLODLights != null) && (DistantLODLights.positions != null))
             {
                 var soa = DistantLODLights.CDistantLODLight;//to copy base vars
-                soa.position = mb.AddItemArrayPtr(MetaName.VECTOR3, DistantLODLights.positions);
+                soa.position = mb.AddItemArrayPtr(MetaName.FloatXYZ, DistantLODLights.positions);
                 soa.RGBI = mb.AddUintArrayPtr(DistantLODLights.colours);
                 mapdata.DistantLODLightsSOA = soa;
             }
@@ -744,11 +748,11 @@ namespace CodeWalker.GameFiles
             }
             if ((LODLights != null) && (LODLights.direction != null))
             {
-                mb.AddStructureInfo(MetaName.VECTOR3);
+                mb.AddStructureInfo(MetaName.FloatXYZ);
             }
             if ((DistantLODLights != null) && (DistantLODLights.positions != null))
             {
-                mb.AddStructureInfo(MetaName.VECTOR3);
+                mb.AddStructureInfo(MetaName.FloatXYZ);
             }
 
             mb.AddEnumInfo(MetaName.rage__eLodType); //LODTYPES_
@@ -1277,8 +1281,12 @@ namespace CodeWalker.GameFiles
         public Archetype Archetype { get; set; } //cached by GameFileCache on loading...
         public Vector3 BBMin;//oriented archetype AABBmin
         public Vector3 BBMax;//oriented archetype AABBmax
+        public Vector3 BBCenter; //oriented archetype AABB center
+        public Vector3 BBExtent; //oriented archetype AABB extent
         public Vector3 BSCenter; //oriented archetype BS center
         public float BSRadius;//cached from archetype
+        public float LodDist;
+        public float ChildLodDist;
 
         public CEntityDef _CEntityDef;
         public CEntityDef CEntityDef { get { return _CEntityDef; } set { _CEntityDef = value; } }
@@ -1310,6 +1318,11 @@ namespace CodeWalker.GameFiles
         public Quaternion PivotOrientation = Quaternion.Identity;
         public Vector3 WidgetPosition = Vector3.Zero;
         public Quaternion WidgetOrientation = Quaternion.Identity;
+
+        public uint EntityHash { get; set; } = 0; //used by CW as a unique position+name identifier
+
+        public LinkedList<YmapEntityDef> LodManagerChildren = null;
+        public object LodManagerRenderable = null;
 
 
         public string Name
@@ -1343,6 +1356,7 @@ namespace CodeWalker.GameFiles
 
             UpdateWidgetPosition();
             UpdateWidgetOrientation();
+            UpdateEntityHash();
         }
 
         public YmapEntityDef(YmapFile ymap, int index, ref CMloInstanceDef mlo)
@@ -1372,36 +1386,19 @@ namespace CodeWalker.GameFiles
             Archetype = arch;
             if (Archetype != null)
             {
-                float smax = Math.Max(Scale.X, Scale.Z);
-                BSRadius = Archetype.BSRadius * smax;
-                BSCenter = Orientation.Multiply(Archetype.BSCenter) * Scale;
-                if (Orientation == Quaternion.Identity)
-                {
-                    BBMin = (Archetype.BBMin * Scale) + Position;
-                    BBMax = (Archetype.BBMax * Scale) + Position;
-                }
-                else
-                {
-                    BBMin = Position - BSRadius;
-                    BBMax = Position + BSRadius;
-                    ////not ideal: should transform all 8 corners!
-                }
+                UpdateBB();
 
                 if (Archetype.Type == MetaName.CMloArchetypeDef)
                 {
                     //transform interior entities into world space...
                     var mloa = Archetype as MloArchetype;
-                    if (MloInstance == null)
-                    {
-                        MloInstance = new MloInstanceData();
-                    }
+                    MloInstance = new MloInstanceData();
+                    MloInstance._Instance = new CMloInstanceDef { CEntityDef = _CEntityDef };
                     if (mloa != null)
                     {
                         if (!IsMlo)
                         {
                             IsMlo = true;
-                            MloInstance._Instance = new CMloInstanceDef { CEntityDef = _CEntityDef };
-
                             List<YmapEntityDef> mloEntities = Ymap.MloEntities?.ToList() ?? new List<YmapEntityDef>();
                             mloEntities.Add(this);
                             Ymap.MloEntities = mloEntities.ToArray();
@@ -1412,7 +1409,14 @@ namespace CodeWalker.GameFiles
 
                     if (BSRadius == 0.0f)
                     {
-                        BSRadius = _CEntityDef.lodDist;//need something so it doesn't get culled...
+                        BSRadius = LodDist;//need something so it doesn't get culled...
+                    }
+                    if (BBMin == BBMax)
+                    {
+                        BBMin = Position - BSRadius;
+                        BBMax = Position + BSRadius;//it's not ideal
+                        BBCenter = (BBMax + BBMin) * 0.5f;
+                        BBExtent = (BBMax - BBMin) * 0.5f;
                     }
                 }
                 else if (IsMlo) // archetype is no longer an mlo
@@ -1455,6 +1459,7 @@ namespace CodeWalker.GameFiles
                 MloInstance.UpdateEntities();
             }
 
+            UpdateEntityHash();
             UpdateWidgetPosition();
         }
 
@@ -1463,17 +1468,66 @@ namespace CodeWalker.GameFiles
             if (Archetype != null)
             {
                 BSCenter = Orientation.Multiply(Archetype.BSCenter) * Scale;
+                BSRadius = Archetype.BSRadius * Math.Max(Scale.X, Scale.Z);
+                if (Orientation == Quaternion.Identity)
+                {
+                    BBMin = (Archetype.BBMin * Scale) + Position;
+                    BBMax = (Archetype.BBMax * Scale) + Position;
+                    BBCenter = (BBMax + BBMin) * 0.5f;
+                    BBExtent = (BBMax - BBMin) * 0.5f;
+                    BBExtent = BBExtent.Abs();
+                }
+                else
+                {
+                    var mat = Matrix.Transformation(Vector3.Zero, Quaternion.Identity, Scale, Vector3.Zero, Orientation, Position);
+                    var matabs = mat;
+                    matabs.Column1 = mat.Column1.Abs();
+                    matabs.Column2 = mat.Column2.Abs();
+                    matabs.Column3 = mat.Column3.Abs();
+                    matabs.Column4 = mat.Column4.Abs();
+                    var bbcenter = (Archetype.BBMax + Archetype.BBMin) * 0.5f;
+                    var bbextent = (Archetype.BBMax - Archetype.BBMin) * 0.5f;
+                    var ncenter = Vector3.TransformCoordinate(bbcenter, mat);
+                    var nextent = Vector3.TransformNormal(bbextent, matabs);
+                    BBCenter = ncenter;
+                    BBExtent = nextent;
+                    BBMin = ncenter - nextent;
+                    BBMax = ncenter + nextent;
+                }
+                LodDist = _CEntityDef.lodDist;
+                if (LodDist <= 0)
+                {
+                    LodDist = Archetype.LodDist;
+                }
+                ChildLodDist = _CEntityDef.childLodDist;
+                if (ChildLodDist < 0)
+                {
+                    ChildLodDist = LodDist * 0.5f;
+                }
             }
-            if ((Archetype != null) && (Orientation == Quaternion.Identity))
+        }
+
+        public void UpdateEntityHash()
+        {
+            unchecked
             {
-                BBMin = (Archetype.BBMin * Scale) + Position;
-                BBMax = (Archetype.BBMax * Scale) + Position;
-            }
-            else
-            {
-                BBMin = Position - (BSRadius);
-                BBMax = Position + (BSRadius);
-                ////not ideal: should transform all 8 corners!
+                var ints = new int[4];
+                var pv = Position;
+                ints[0] = (int)pv.X;
+                ints[1] = (int)pv.Y;
+                ints[2] = (int)pv.Z;
+                ints[3] = (int)_CEntityDef.archetypeName.Hash;
+                var bytes = new byte[16];
+                for (int i = 0; i < 4; i++)
+                {
+                    var ib = i * 4;
+                    var b = BitConverter.GetBytes(ints[i]);
+                    bytes[ib + 0] = b[0];
+                    bytes[ib + 1] = b[1];
+                    bytes[ib + 2] = b[2];
+                    bytes[ib + 3] = b[3];
+                }
+                EntityHash = JenkHash.GenHash(bytes);
             }
         }
 
@@ -1487,35 +1541,27 @@ namespace CodeWalker.GameFiles
                 Orientation = ori;
                 _CEntityDef.rotation = inv.ToVector4();
             }
-            else if(MloInstance != null)
-            {
-                ori = inverse ? Quaternion.Normalize(Quaternion.Invert(ori)) : ori;
-                /**
-                 * 5pHiNxX:
-                 * - no need to inverse as Mlo is not stored inversed
-                 */
-                Quaternion inv = ori;
-                Orientation = ori;
-                _CEntityDef.rotation = inv.ToVector4();
-            }
             else
             {
-                Quaternion inv = inverse ? ori : Quaternion.Normalize(Quaternion.Invert(ori));
-                ori = inverse ? Quaternion.Normalize(Quaternion.Invert(ori)) : ori;
-                Orientation = ori;
-                _CEntityDef.rotation = inv.ToVector4();
+                Orientation = inverse ? Quaternion.Normalize(Quaternion.Invert(ori)) : ori;
+                if (MloInstance != null)
+                {
+                    _CEntityDef.rotation = Orientation.ToVector4();
+                }
+                else
+                {
+                    Quaternion inv = inverse ? ori : Quaternion.Normalize(Quaternion.Invert(ori));
+                    _CEntityDef.rotation = inv.ToVector4();
+                }
             }
 
             if (MloInstance != null)
             {
                 MloInstance.SetOrientation(ori);
+                MloInstance.UpdateEntities();
             }
 
-            if (Archetype != null)
-            {
-                BSCenter = Orientation.Multiply(Archetype.BSCenter) * Scale;
-            }
-
+            UpdateBB();
             UpdateWidgetPosition();
             UpdateWidgetOrientation();
         }
@@ -1651,6 +1697,21 @@ namespace CodeWalker.GameFiles
             ChildList.Clear();
             ChildList = null;
         }
+
+
+        public void LodManagerAddChild(YmapEntityDef child)
+        {
+            if (LodManagerChildren == null)
+            {
+                LodManagerChildren = new LinkedList<YmapEntityDef>();
+            }
+            LodManagerChildren.AddLast(child);
+        }
+        public void LodManagerRemoveChild(YmapEntityDef child)
+        {
+            LodManagerChildren?.Remove(child);//could improve this by caching the list node....
+        }
+
 
         public override string ToString()
         {
